@@ -1,10 +1,84 @@
 import torch
+from torch_scatter import scatter_max, scatter
+from torch_cluster import radius, radius_graph
 from mmcv.runner import auto_fp16
 from torch import nn as nn
 
 from mmdet3d.ops import PointFPModule, build_sa_module
 from mmdet.models import BACKBONES
 from .base_pointnet import BasePointNet
+
+def multi_layer_neural_network_fn(Ks):
+    linears = []
+    for i in range(1, len(Ks)):
+        linears += [
+        nn.Linear(Ks[i-1], Ks[i]),
+        nn.ReLU(),
+        nn.BatchNorm1d(Ks[i])]
+    return nn.Sequential(*linears)
+
+def max_aggregation_fn(features, index, l):
+    """
+    Arg: features: N x dim
+    index: N x 1, e.g.  [0,0,0,1,1,...l,l]
+    l: lenght of keypoints
+    """
+    index = index.unsqueeze(-1).expand(-1, features.shape[-1]) # N x 64
+    set_features = torch.zeros((l, features.shape[-1]), device=features.device).permute(1,0).contiguous() # len x 64
+    set_features, argmax = scatter_max(features.permute(1,0), index.permute(1,0), out=set_features)
+    set_features = set_features.permute(1,0)
+    return set_features
+
+def build_edge(xyz, radiu, max_num_neighbors=256, loop=True):
+    """
+    xyz: b x n x 3
+    """
+    xyz = xyz.squeeze()
+    batch_x = torch.tensor([0]*len(xyz)).to(xyz.device)
+
+    edges = radius_graph(xyz, radiu, batch_x, loop, max_num_neighbors=max_num_neighbors)
+    return edges
+
+class GCN_Module(nn.Module):
+    def __init__(self, edge_MLP_depth_list=[256+3, 256, 256], update_MLP_depth_list=[256, 256, 256]):
+        super(GCN_Module, self).__init__()
+        self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        self.update_fn = multi_layer_neural_network_fn(update_MLP_depth_list)
+
+    def forward(self, xyz, features, edges):
+        """
+        xys: b x n x 3
+        features: b x C x n
+        """
+        # 
+        input_vertex_features = features[0].permute(1,0) # n x C
+        input_vertex_coordinates = xyz[0]
+        edges = edges.permute(1,0)
+
+
+        # Gather the source vertex of the edges
+        s_vertex_features = input_vertex_features[edges[:, 0]]
+        s_vertex_coordinates = input_vertex_coordinates[edges[:, 0]]
+
+        # Gather the destination vertex of the edges
+        d_vertex_coordinates = input_vertex_coordinates[edges[:, 1]]
+
+
+        # Prepare initial edge features
+        edge_features = torch.cat([s_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
+
+
+        # Extract edge features
+        edge_features = self.edge_feature_fn(edge_features)
+
+        # Aggregate edge features
+        aggregated_edge_features = max_aggregation_fn(edge_features, edges[:,1], input_vertex_features.shape[0])
+
+        # Update vertex features
+        update_features = self.update_fn(aggregated_edge_features)
+        output_vertex_features  = update_features + input_vertex_features
+
+        return output_vertex_features.permute(1,0).unsqueeze(0).contiguous()
 
 
 @BACKBONES.register_module()
@@ -84,6 +158,12 @@ class PointNet2SASSG(BasePointNet):
                 fp_source_channel = cur_fp_mlps[-1]
                 fp_target_channel = skip_channel_list.pop()
 
+#        self.GCN_Blocks = nn.ModuleList()
+#        for _ in range(3):
+#            self.GCN_Blocks.append( GCN_Module() )
+
+
+
     @auto_fp16(apply_to=('points', ))
     def forward(self, points):
         """Forward pass.
@@ -115,6 +195,11 @@ class PointNet2SASSG(BasePointNet):
         for i in range(self.num_sa):
             cur_xyz, cur_features, cur_indices = self.SA_modules[i](
                 sa_xyz[i], sa_features[i])
+
+#            if i>0: 
+#                edges = build_edge(cur_xyz, radiu=0.2*(i+1))
+#                cur_features = self.GCN_Blocks[i-1](cur_xyz, cur_features, edges)
+
             sa_xyz.append(cur_xyz)
             sa_features.append(cur_features)
             sa_indices.append(
@@ -130,6 +215,7 @@ class PointNet2SASSG(BasePointNet):
                 sa_features[self.num_sa - i - 1], fp_features[-1]))
             fp_xyz.append(sa_xyz[self.num_sa - i - 1])
             fp_indices.append(sa_indices[self.num_sa - i - 1])
+
 
         ret = dict(
             fp_xyz=fp_xyz, fp_features=fp_features, fp_indices=fp_indices)
