@@ -9,7 +9,7 @@
 export PYTHONPATH=$PWD:$PYTHONPATH
 
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch --nproc_per_node=4 --master_port=29709 ./tools/train.py configs/votenet/votenet_16x8_sunrgbd-3d-10class.py --launcher pytorch --work-dir gan
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch --nproc_per_node=4 --master_port=29709 ./tools/train.py configs/votenet/votenet_16x8_sunrgbd-3d-10class.py --launcher pytorch --work-dir gnn
 
 #CUDA_LAUNCH_BLOCKING=1 python train_mmdet.py configs/votenet/votenet_16x8_sunrgbd-3d-10class.py
 
