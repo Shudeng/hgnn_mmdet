@@ -1,6 +1,8 @@
 import torch
 from torch_scatter import scatter_max, scatter
 from torch_cluster import radius, radius_graph
+from torch_cluster import knn_graph
+
 from mmcv.runner import auto_fp16
 from torch import nn as nn
 
@@ -19,28 +21,24 @@ def multi_layer_neural_network_fn(Ks):
 
 def max_aggregation_fn(features, index, l):
     """
-    Arg: features: N x dim
-    index: N x 1, e.g.  [0,0,0,1,1,...l,l]
-    l: lenght of keypoints
+    features: b x e x C
+    index: b x e
     """
-    index = index.unsqueeze(-1).expand(-1, features.shape[-1]) # N x 64
-    set_features = torch.zeros((l, features.shape[-1]), device=features.device).permute(1,0).contiguous() # len x 64
-    set_features, argmax = scatter_max(features.permute(1,0), index.permute(1,0), out=set_features)
-    set_features = set_features.permute(1,0)
+    set_features = scatter(features, index, dim=1, reduce="max")
     return set_features
 
-def build_edge(xyz, radiu, max_num_neighbors=256, loop=True):
+def build_edge(xyzs, k=16, loop=True):
     """
     xyz: b x n x 3
     """
-    xyz = xyz.squeeze()
-    batch_x = torch.tensor([0]*len(xyz)).to(xyz.device)
+    edges = []
+    for xyz in xyzs:
+        edges += [knn_graph(xyz, 16)]
 
-    edges = radius_graph(xyz, radiu, batch_x, loop, max_num_neighbors=max_num_neighbors)
-    return edges
+    return torch.stack(edges) # B x 2 x L, L = (16*n)
 
 class GCN_Module(nn.Module):
-    def __init__(self, edge_MLP_depth_list=[256+3, 256, 256], update_MLP_depth_list=[256, 256, 256]):
+    def __init__(self, edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
         super(GCN_Module, self).__init__()
         self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.update_fn = multi_layer_neural_network_fn(update_MLP_depth_list)
@@ -51,34 +49,41 @@ class GCN_Module(nn.Module):
         features: b x C x n
         """
         # 
-        input_vertex_features = features[0].permute(1,0) # n x C
-        input_vertex_coordinates = xyz[0]
-        edges = edges.permute(1,0)
+        input_vertex_features = features.permute(0,2,1) # b x n x C
+        input_vertex_coordinates = xyz # b x n x 3
+        edges = edges.permute(0, 2,1) # b x e x 2
 
 
         # Gather the source vertex of the edges
-        s_vertex_features = input_vertex_features[edges[:, 0]]
-        s_vertex_coordinates = input_vertex_coordinates[edges[:, 0]]
+        s_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, :1].expand(-1, -1, input_vertex_features.shape[-1])) # b x e x C
+        s_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, :1].expand(-1, -1, 3)) # b x e x 3
 
         # Gather the destination vertex of the edges
-        d_vertex_coordinates = input_vertex_coordinates[edges[:, 1]]
-
+        d_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, 1:].expand(-1, -1, 3))
 
         # Prepare initial edge features
-        edge_features = torch.cat([s_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
+        edge_features = torch.cat([s_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1) # b x e x (C+3)
 
 
         # Extract edge features
-        edge_features = self.edge_feature_fn(edge_features)
+        b, e, C = edge_features.shape
+
+        edge_features = edge_features.view(-1, C)
+        edge_features = self.edge_feature_fn(edge_features) # b x e x C
+        edge_features = edge_features.view(b, e, C-3)
 
         # Aggregate edge features
-        aggregated_edge_features = max_aggregation_fn(edge_features, edges[:,1], input_vertex_features.shape[0])
+        aggregated_edge_features = max_aggregation_fn(edge_features, edges[:, :,1], input_vertex_features.shape[0]) # b x n x C
 
         # Update vertex features
-        update_features = self.update_fn(aggregated_edge_features)
+        b, N, C = aggregated_edge_features.shape
+        aggregated_edge_features = aggregated_edge_features.view(-1, C)
+        update_features = self.update_fn(aggregated_edge_features) # (bxN) x C
+        update_features = update_features.view(b,N,C)
+
         output_vertex_features  = update_features + input_vertex_features
 
-        return output_vertex_features.permute(1,0).unsqueeze(0).contiguous()
+        return output_vertex_features.permute(0, 2,1).contiguous() # b x C x n
 
 
 @BACKBONES.register_module()
@@ -158,9 +163,9 @@ class PointNet2SASSG(BasePointNet):
                 fp_source_channel = cur_fp_mlps[-1]
                 fp_target_channel = skip_channel_list.pop()
 
-#        self.GCN_Blocks = nn.ModuleList()
-#        for _ in range(3):
-#            self.GCN_Blocks.append( GCN_Module() )
+        self.GCN_Blocks = nn.ModuleList()
+        for _ in range(3):
+            self.GCN_Blocks.append( GCN_Module() )
 
 
 
@@ -196,9 +201,9 @@ class PointNet2SASSG(BasePointNet):
             cur_xyz, cur_features, cur_indices = self.SA_modules[i](
                 sa_xyz[i], sa_features[i])
 
-#            if i>0: 
-#                edges = build_edge(cur_xyz, radiu=0.2*(i+1))
-#                cur_features = self.GCN_Blocks[i-1](cur_xyz, cur_features, edges)
+            if i>0: 
+                edges = build_edge(cur_xyz, k=16)
+                cur_features = self.GCN_Blocks[i-1](cur_xyz, cur_features, edges)
 
             sa_xyz.append(cur_xyz)
             sa_features.append(cur_features)
