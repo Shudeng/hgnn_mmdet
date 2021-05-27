@@ -51,7 +51,6 @@ class GCN_Module(nn.Module):
         # 
         input_vertex_features = features.permute(0,2,1) # b x n x C
         input_vertex_coordinates = xyz # b x n x 3
-        edges = edges.permute(0, 2,1) # b x e x 2
 
 
         # Gather the source vertex of the edges
@@ -84,6 +83,18 @@ class GCN_Module(nn.Module):
         output_vertex_features  = update_features + input_vertex_features
 
         return output_vertex_features.permute(0, 2,1).contiguous() # b x C x n
+
+class GCN_Block(nn.Module):
+    def __init__(self, layers,  edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
+        super(GCN_Block, self).__init__()
+        self.layers = nn.ModuleList()
+        for _ in range(layers):
+            self.layers.append(GCN_Module(edge_MLP_depth_list, update_MLP_depth_list))
+
+    def forward(self, xyz, features, edges):
+        for i in range(len(self.layers)):
+            features = self.layers[i](xyz, features, edges)
+        return features
 
 
 @BACKBONES.register_module()
@@ -122,7 +133,8 @@ class PointNet2SASSG(BasePointNet):
                      type='PointSAModule',
                      pool_mod='max',
                      use_xyz=True,
-                     normalize_xyz=True)):
+                     normalize_xyz=True),
+                 gcn_cfg=[3,3,3]):
         super().__init__()
         self.num_sa = len(sa_channels)
         self.num_fp = len(fp_channels)
@@ -164,10 +176,8 @@ class PointNet2SASSG(BasePointNet):
                 fp_target_channel = skip_channel_list.pop()
 
         self.GCN_Blocks = nn.ModuleList()
-        for _ in range(3):
-            self.GCN_Blocks.append( GCN_Module() )
-
-
+        for i in range(3):
+            self.GCN_Blocks.append( GCN_Block(gcn_cfg[i]) )
 
     @auto_fp16(apply_to=('points', ))
     def forward(self, points):
@@ -203,6 +213,8 @@ class PointNet2SASSG(BasePointNet):
 
             if i>0: 
                 edges = build_edge(cur_xyz, k=16)
+                edges = edges.permute(0, 2,1) # b x e x 2
+
                 cur_features = self.GCN_Blocks[i-1](cur_xyz, cur_features, edges)
 
             sa_xyz.append(cur_xyz)
