@@ -84,6 +84,60 @@ class GCN_Module(nn.Module):
 
         return output_vertex_features.permute(0, 2,1).contiguous() # b x C x n
 
+class GAN_Module(nn.Module):
+    def __init__(self, edge_MLP_depth_list=[256+3, 256, 256], update_MLP_depth_list=[256, 256, 256]):
+        super(GAN_Module, self).__init__()
+#        self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        self.key_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        self.value_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        self.query_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        self.update_fn = multi_layer_neural_network_fn(update_MLP_depth_list)
+
+    def forward(self, xyz, features, edges):
+        """
+        xys: b x n x 3
+        features: b x C x n
+        """
+        # 
+        input_vertex_features = features.permute(0,2,1) # b x n x C
+        input_vertex_coordinates = xyz # b x n x 3
+
+
+        # Gather the source vertex of the edges
+        s_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, :1].expand(-1, -1, input_vertex_features.shape[-1])) # b x e x C
+        s_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, :1].expand(-1, -1, 3)) # b x e x 3
+
+        # Gather the destination vertex of the edges
+        d_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, 1:].expand(-1, -1, input_vertex_features.shape[-1]) # b x e x C
+        d_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, 1:].expand(-1, -1, 3)) # b x e x 3
+
+        # Prepare initial edge features
+        s_vertex_features = torch.cat([s_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
+        d_vertex_features = torch.cat([d_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
+
+        b, e, C = s_vertex_features.shape
+        s_vertex_features = s_vertex_features.view(-1, C)
+        d_vertex_features = d_vertex_features.view(-1, C)
+
+        key = self.key_fn(s_vertex_features) # (b x e) x C
+        key = key.view(b,e,-1) # b x e x C
+        value = self.value_fn(s_vertex_features) # (b x e) x C
+        value = value.view(b,e,-1) # b x e x C
+        query = self.query_fn(d_vertex_features) # (bxe) x C
+        query = query.view(b,e,-1)
+
+        # calculate similarity
+        simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e
+        max_ = scatter(simi, edges[:, :, 1], dim=-1, reduce="max").squeeze() # b x N
+        max_ = torch.gather(max_, dim=1, index=edges[:,:, 1]) # b x e
+        simi = simi-max_ # b x e
+        simi = torch.exp(simi) # b x e
+
+        base = scatter(simi, edges[:, :, 1], dim=-1, reduce="sum") # b x n
+        base = torch.gather(base, dim=1, index=edges[:,:,1]) # b x e
+        simi = simi / base # b x e
+
+        # Aggregate edge features
 class GCN_Block(nn.Module):
     def __init__(self, layers,  edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
         super(GCN_Block, self).__init__()
