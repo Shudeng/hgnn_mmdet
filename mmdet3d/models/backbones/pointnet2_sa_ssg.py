@@ -138,6 +138,25 @@ class GAN_Module(nn.Module):
         simi = simi / base # b x e
 
         # Aggregate edge features
+        value = value * simi[:, :, None] # b x e x C
+        aggregated_features = scatter(value, edges[:, :, 1], dim=0, reduce="mean") # b x n x C
+
+        # Update vertex features
+        b, n, C = aggregated_features.shape
+        aggregated_features=aggregated_features.view(-1, C)
+        update_features = self.update_fn(aggregated_features) # (bxn) x C
+        update_features = update_features.view(b,n,-1) # bxnxC
+
+        output_vertex_features  = update_features + input_vertex_features
+
+        return output_vertex_features.permute(0, 2, 1).contiguous()
+
+
+
+
+
+
+
 class GCN_Block(nn.Module):
     def __init__(self, layers,  edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
         super(GCN_Block, self).__init__()
