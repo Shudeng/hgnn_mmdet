@@ -1,4 +1,5 @@
 import torch
+import math
 from torch_scatter import scatter_max, scatter
 from torch_cluster import radius, radius_graph
 from torch_cluster import knn_graph
@@ -33,7 +34,7 @@ def build_edge(xyzs, k=16, loop=True):
     """
     edges = []
     for xyz in xyzs:
-        edges += [knn_graph(xyz, 16)]
+        edges += [knn_graph(xyz, k)]
 
     return torch.stack(edges) # B x 2 x L, L = (16*n)
 
@@ -85,7 +86,7 @@ class GCN_Module(nn.Module):
         return output_vertex_features.permute(0, 2,1).contiguous() # b x C x n
 
 class GAN_Module(nn.Module):
-    def __init__(self, edge_MLP_depth_list=[256+3, 256, 256], update_MLP_depth_list=[256, 256, 256]):
+    def __init__(self, edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
         super(GAN_Module, self).__init__()
 #        self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.key_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
@@ -108,7 +109,7 @@ class GAN_Module(nn.Module):
         s_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, :1].expand(-1, -1, 3)) # b x e x 3
 
         # Gather the destination vertex of the edges
-        d_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, 1:].expand(-1, -1, input_vertex_features.shape[-1]) # b x e x C
+        d_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, 1:].expand(-1, -1, input_vertex_features.shape[-1])) # b x e x C
         d_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, 1:].expand(-1, -1, 3)) # b x e x 3
 
         # Prepare initial edge features
@@ -128,8 +129,9 @@ class GAN_Module(nn.Module):
 
         # calculate similarity
         simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e
-        max_ = scatter(simi, edges[:, :, 1], dim=-1, reduce="max").squeeze() # b x N
+        max_ = scatter(simi, edges[:, :, 1], dim=-1, reduce="max") # b x N
         max_ = torch.gather(max_, dim=1, index=edges[:,:, 1]) # b x e
+
         simi = simi-max_ # b x e
         simi = torch.exp(simi) # b x e
 
@@ -139,7 +141,7 @@ class GAN_Module(nn.Module):
 
         # Aggregate edge features
         value = value * simi[:, :, None] # b x e x C
-        aggregated_features = scatter(value, edges[:, :, 1], dim=0, reduce="mean") # b x n x C
+        aggregated_features = scatter(value, edges[:, :, 1], dim=1, reduce="mean") # b x n x C
 
         # Update vertex features
         b, n, C = aggregated_features.shape
@@ -151,18 +153,13 @@ class GAN_Module(nn.Module):
 
         return output_vertex_features.permute(0, 2, 1).contiguous()
 
-
-
-
-
-
-
 class GCN_Block(nn.Module):
     def __init__(self, layers,  edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
         super(GCN_Block, self).__init__()
         self.layers = nn.ModuleList()
         for _ in range(layers):
-            self.layers.append(GCN_Module(edge_MLP_depth_list, update_MLP_depth_list))
+            #self.layers.append(GCN_Module(edge_MLP_depth_list, update_MLP_depth_list))
+            self.layers.append(GAN_Module(edge_MLP_depth_list, update_MLP_depth_list))
 
     def forward(self, xyz, features, edges):
         for i in range(len(self.layers)):
