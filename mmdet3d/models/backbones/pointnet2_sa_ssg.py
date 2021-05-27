@@ -17,7 +17,9 @@ def multi_layer_neural_network_fn(Ks):
         linears += [
         nn.Linear(Ks[i-1], Ks[i]),
         nn.ReLU(),
-        nn.BatchNorm1d(Ks[i])]
+#        nn.LayerNorm(Ks[i])
+        nn.BatchNorm1d(Ks[i])
+        ]
     return nn.Sequential(*linears)
 
 def max_aggregation_fn(features, index, l):
