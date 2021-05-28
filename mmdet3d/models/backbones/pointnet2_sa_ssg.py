@@ -17,8 +17,8 @@ def multi_layer_neural_network_fn(Ks):
         linears += [
         nn.Linear(Ks[i-1], Ks[i]),
         nn.ReLU(),
-#        nn.LayerNorm(Ks[i])
-        nn.BatchNorm1d(Ks[i])
+        nn.LayerNorm(Ks[i])
+#        nn.BatchNorm1d(Ks[i])
         ]
     return nn.Sequential(*linears)
 
@@ -88,13 +88,14 @@ class GCN_Module(nn.Module):
         return output_vertex_features.permute(0, 2,1).contiguous() # b x C x n
 
 class GAN_Module(nn.Module):
-    def __init__(self, edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256]):
+    def __init__(self, edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256], heads=4):
         super(GAN_Module, self).__init__()
 #        self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.key_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.value_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.query_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.update_fn = multi_layer_neural_network_fn(update_MLP_depth_list)
+        self.heads = heads
 
     def forward(self, xyz, features, edges):
         """
@@ -123,26 +124,32 @@ class GAN_Module(nn.Module):
         d_vertex_features = d_vertex_features.view(-1, C)
 
         key = self.key_fn(s_vertex_features) # (b x e) x C
-        key = key.view(b,e,-1) # b x e x C
+        key = key.view(b,e, self.heads, -1) # b x e x heads x C
+
         value = self.value_fn(s_vertex_features) # (b x e) x C
-        value = value.view(b,e,-1) # b x e x C
+        value = value.view(b,e,self.heads, -1) # b x e x heads x C
+
         query = self.query_fn(d_vertex_features) # (bxe) x C
-        query = query.view(b,e,-1)
+        query = query.view(b,e,self.heads, -1) # b x e x heads x C
+
 
         # calculate similarity
-        simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e
-        max_ = scatter(simi, edges[:, :, 1], dim=-1, reduce="max") # b x N
-        max_ = torch.gather(max_, dim=1, index=edges[:,:, 1]) # b x e
+        simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e x heads
+        max_ = scatter(simi, edges[:, :, 1], dim=-1, reduce="max") # b x N x heads
+        max_ = torch.gather(max_, dim=1, index=edges[:,:, :1].expand(-1,-1,self.heads)) # b x e x heads
 
-        simi = simi-max_ # b x e
-        simi = torch.exp(simi) # b x e
+        simi = simi-max_ # b x e x heads
+        simi = torch.exp(simi) # b x e x heads
 
-        base = scatter(simi, edges[:, :, 1], dim=-1, reduce="sum") # b x n
-        base = torch.gather(base, dim=1, index=edges[:,:,1]) # b x e
-        simi = simi / base # b x e
+        base = scatter(simi, edges[:, :, 1], dim=-1, reduce="sum") # b x n x heads
+        base = torch.gather(base, dim=1, index=edges[:,:,:1].expand(-1,-1, self.heads)) # b x e x heads
+        simi = simi / base # b x e x heads
 
         # Aggregate edge features
-        value = value * simi[:, :, None] # b x e x C
+        value = value * simi[:, :, :, None] # b x e x heads x C
+        value = value.view(b, e, -1)
+
+
         aggregated_features = scatter(value, edges[:, :, 1], dim=1, reduce="mean") # b x n x C
 
         # Update vertex features
