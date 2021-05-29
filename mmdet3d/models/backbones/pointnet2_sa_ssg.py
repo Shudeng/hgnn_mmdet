@@ -88,7 +88,7 @@ class GCN_Module(nn.Module):
         return output_vertex_features.permute(0, 2,1).contiguous() # b x C x n
 
 class GAN_Module(nn.Module):
-    def __init__(self, edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256], heads=4):
+    def __init__(self, edge_MLP_depth_list=[256+3, 256], update_MLP_depth_list=[256, 256], heads=8):
         super(GAN_Module, self).__init__()
 #        self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.key_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
