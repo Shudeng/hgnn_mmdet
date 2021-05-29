@@ -95,6 +95,8 @@ class GAN_Module(nn.Module):
         self.value_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.query_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.update_fn = multi_layer_neural_network_fn(update_MLP_depth_list)
+
+        assert edge_MLP_depth_list[-1] % heads == 0
         self.heads = heads
 
     def forward(self, xyz, features, edges):
@@ -133,17 +135,24 @@ class GAN_Module(nn.Module):
         query = query.view(b,e,self.heads, -1) # b x e x heads x C
 
 
+
         # calculate similarity
         simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e x heads
-        max_ = scatter(simi, edges[:, :, 1], dim=-1, reduce="max") # b x N x heads
-        max_ = torch.gather(max_, dim=1, index=edges[:,:, :1].expand(-1,-1,self.heads)) # b x e x heads
+        max_ = scatter(simi, edges[:, :, 1], dim=1, reduce="max") # b x N x heads
+
+        max_ = torch.gather(max_, dim=1, index=edges[:,:, 1:].expand(-1,-1,self.heads)) # b x e x heads
 
         simi = simi-max_ # b x e x heads
         simi = torch.exp(simi) # b x e x heads
 
-        base = scatter(simi, edges[:, :, 1], dim=-1, reduce="sum") # b x n x heads
-        base = torch.gather(base, dim=1, index=edges[:,:,:1].expand(-1,-1, self.heads)) # b x e x heads
+        base = scatter(simi, edges[:, :, 1], dim=1, reduce="sum") # b x n x heads
+        base = torch.gather(base, dim=1, index=edges[:,:,1:].expand(-1,-1, self.heads)) # b x e x heads
         simi = simi / base # b x e x heads
+
+#        base = scatter(simi, edges[:, :, 1], dim=1, reduce="sum") # b x n x heads
+#        print("base", base, base.shape) # base[i, j, k]==1 for all (i,j,k)
+
+
 
         # Aggregate edge features
         value = value * simi[:, :, :, None] # b x e x heads x C
