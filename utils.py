@@ -41,8 +41,10 @@ def build_edge(xyzs, k=16, loop=True):
     xyz: b x n x 3
     """
     edges = []
-    for xyz in xyzs:
-        edges += [knn_graph(xyz, k)]
+    for i, xyz in enumerate(xyzs):
+
+        edges += [knn_graph(xyz, k)[:, :k*xyz.shape[0]]]
+        #print(k*xyz.shape[0], i, xyz.shape, edges[-1].shape)
 
     return torch.stack(edges) # B x 2 x L, L = (16*n)
 

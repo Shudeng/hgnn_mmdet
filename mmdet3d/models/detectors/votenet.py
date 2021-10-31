@@ -58,6 +58,9 @@ class VoteNet(SingleStage3DDetector):
                        pts_instance_mask, img_metas)
         losses = self.bbox_head.loss(
             bbox_preds, *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
+
+        losses['regulizer_loss'] = self.backbone.regulizer_loss
+
         return losses
 
     def simple_test(self, points, img_metas, imgs=None, rescale=False):
