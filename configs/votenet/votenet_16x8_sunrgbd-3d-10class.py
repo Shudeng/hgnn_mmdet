@@ -19,3 +19,10 @@ model = dict(
                 [0.404671, 1.071108, 1.688889], [0.76584, 1.398258, 0.472728]
             ]),
     ))
+
+data = dict(
+    samples_per_gpu=16,
+    workers_per_gpu=4,
+    )
+
+total_epochs = 51

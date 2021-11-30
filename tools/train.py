@@ -138,8 +138,8 @@ def main():
     model = build_detector(
         cfg.model, train_cfg=cfg.train_cfg, test_cfg=cfg.test_cfg)
 
-    from backbone import BACKBONE
-    model.backbone = BACKBONE
+#    from backbone import BACKBONE
+#    model.backbone = BACKBONE
 
 
 

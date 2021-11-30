@@ -11,22 +11,47 @@ from mmdet3d.ops import PointFPModule, build_sa_module
 from mmdet.models import BACKBONES
 from mmdet3d.models.backbones.base_pointnet import BasePointNet
 
-def multi_layer_neural_network_fn(Ks, relu=True):
+def multi_layer_neural_network_fn(Ks, relu=True, norm="LayerNorm"):
     linears = []
     for i in range(1, len(Ks)):
         if relu:
             linears += [
             nn.Linear(Ks[i-1], Ks[i]),
             nn.ReLU(),
-            nn.LayerNorm(Ks[i])
-#            nn.BatchNorm1d(Ks[i])
+            nn.LayerNorm(Ks[i]) if norm=="LayerNorm" else nn.BatchNorm1d(Ks[i])
             ]
         else:
             linears += [
             nn.Linear(Ks[i-1], Ks[i]),
-            nn.LayerNorm(Ks[i])
+            nn.LayerNorm(Ks[i]) if norm=="LayerNorm" else nn.BatchNorm1d(Ks[i])
+#            nn.LayerNorm(Ks[i])
             ]
     return nn.Sequential(*linears)
+
+class MLPs(nn.Module):
+    def __init__(self, Ks, relu=True, norm="BatchNorm"):
+        super(MLPs, self).__init__()
+        self.mlps = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.layers = len(Ks)-1
+        self.relu = nn.ReLU()
+
+        for i in range(1, len(Ks)):
+            self.mlps.append( nn.Sequential(*[
+                nn.Linear(Ks[i-1], Ks[i]),
+            ]) )
+            self.norms.append(nn.LayerNorm(Ks[i]) if norm=="LayerNorm" else nn.BatchNorm1d(Ks[i]))
+
+    def forward(self, features):
+        for i in range(self.layers):
+            features = self.mlps[i](features)
+            features = features.permute(0, 2, 1)
+            features = self.norms[i](features)
+            features = self.relu( features.permute(0, 2, 1) )
+            
+        return features
+
+
 
 def max_aggregation_fn(features, index, l):
     """
@@ -191,4 +216,10 @@ class GCN_Block(nn.Module):
         for i in range(len(self.layers)):
             features = self.layers[i](xyz, features, edges)
         return features
+
+if __name__ == "__main__":
+    mlps = MLPs([10, 100, 20])
+    features = torch.rand(2, 128, 10)
+    features = mlps(features)
+    print(features.shape)
 

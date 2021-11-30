@@ -53,7 +53,8 @@ class PointSAModuleMSG(nn.Module):
                  use_xyz: bool = True,
                  pool_mod='max',
                  normalize_xyz: bool = False,
-                 bias='auto'):
+                 bias='auto',
+                 downsample_block=None):
         super().__init__()
 
         assert len(radii) == len(sample_nums) == len(mlp_channels)
@@ -79,8 +80,10 @@ class PointSAModuleMSG(nn.Module):
         self.fps_mod_list = fps_mod
         self.fps_sample_range_list = fps_sample_range_list
 
-        self.points_sampler = Points_Sampler(self.num_point, self.fps_mod_list,
-                                             self.fps_sample_range_list)
+        if downsample_block is None:
+            self.points_sampler = Points_Sampler(self.num_point, self.fps_mod_list, self.fps_sample_range_list)
+
+        self.downsample_block = downsample_block
 
         for i in range(len(radii)):
             radius = radii[i]
@@ -145,6 +148,8 @@ class PointSAModuleMSG(nn.Module):
         """
         new_features_list = []
         xyz_flipped = points_xyz.transpose(1, 2).contiguous()
+        #import pdb; pdb.set_trace()
+
         if indices is not None:
             assert (indices.shape[1] == self.num_point[0])
             new_xyz = gather_points(xyz_flipped, indices).transpose(
@@ -152,9 +157,12 @@ class PointSAModuleMSG(nn.Module):
         elif target_xyz is not None:
             new_xyz = target_xyz.contiguous()
         else:
-            indices = self.points_sampler(points_xyz, features)
-            new_xyz = gather_points(xyz_flipped, indices).transpose(
-                1, 2).contiguous() if self.num_point is not None else None
+            if self.downsample_block is None:
+                indices = self.points_sampler(points_xyz, features)
+                new_xyz = gather_points(xyz_flipped, indices).transpose(
+                        1, 2).contiguous() if self.num_point is not None else None
+            else:
+                new_xyz, downsample_new_features, indices = self.downsample_block(points_xyz, features)
 
         for i in range(len(self.groupers)):
             # (B, C, num_point, nsample)
@@ -173,7 +181,11 @@ class PointSAModuleMSG(nn.Module):
             else:
                 raise NotImplementedError
 
-            new_features = new_features.squeeze(-1)  # (B, mlp[-1], num_point)
+            if self.downsample_block is None:
+                new_features = new_features.squeeze(-1)
+            else:
+                #print(i, new_features.shape, downsample_new_features.shape)
+                new_features = new_features.squeeze(-1) + downsample_new_features  # (B, mlp[-1], num_point)
             new_features_list.append(new_features)
 
         return new_xyz, torch.cat(new_features_list, dim=1), indices
@@ -216,7 +228,8 @@ class PointSAModule(PointSAModuleMSG):
                  pool_mod: str = 'max',
                  fps_mod: List[str] = ['D-FPS'],
                  fps_sample_range_list: List[int] = [-1],
-                 normalize_xyz: bool = False):
+                 normalize_xyz: bool = False,
+                 downsample_block=None):
         super().__init__(
             mlp_channels=[mlp_channels],
             num_point=num_point,
@@ -227,4 +240,5 @@ class PointSAModule(PointSAModuleMSG):
             pool_mod=pool_mod,
             fps_mod=fps_mod,
             fps_sample_range_list=fps_sample_range_list,
-            normalize_xyz=normalize_xyz)
+            normalize_xyz=normalize_xyz,
+            downsample_block=downsample_block)

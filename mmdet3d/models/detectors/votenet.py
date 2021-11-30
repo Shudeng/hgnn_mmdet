@@ -59,7 +59,7 @@ class VoteNet(SingleStage3DDetector):
         losses = self.bbox_head.loss(
             bbox_preds, *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
 
-        losses['regulizer_loss'] = self.backbone.regulizer_loss
+        #losses['regulizer_loss'] = self.backbone.regulizer_loss
 
         return losses
 

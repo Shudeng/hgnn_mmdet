@@ -10,6 +10,9 @@ from torch import nn as nn
 from mmdet3d.ops import PointFPModule, build_sa_module
 from mmdet.models import BACKBONES
 from .base_pointnet import BasePointNet
+import sys
+sys.path.insert(0, "/home/shudeng/mmdetection3d")
+from downsample_block import DownSampleBlock
 
 def multi_layer_neural_network_fn(Ks):
     linears = []
@@ -247,7 +250,14 @@ class PointNet2SASSG(BasePointNet):
                     num_sample=num_samples[sa_index],
                     mlp_channels=cur_sa_mlps,
                     norm_cfg=norm_cfg,
-                    cfg=sa_cfg))
+                    cfg=sa_cfg,
+                    downsample_block=DownSampleBlock(
+                        sa_channels[sa_index-1][-1], 
+                        sa_channels[sa_index][-1],
+                        num_points[sa_index-1],
+                        num_points[sa_index]
+                        ) if sa_index!=0 else None
+                    ))
             skip_channel_list.append(sa_out_channel)
             sa_in_channel = sa_out_channel
 

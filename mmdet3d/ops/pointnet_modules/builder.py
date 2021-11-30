@@ -31,6 +31,7 @@ def build_sa_module(cfg, *args, **kwargs):
     else:
         sa_module = SA_MODULES.get(module_type)
 
+
     module = sa_module(*args, **kwargs, **cfg_)
 
     return module
