@@ -17,8 +17,8 @@ def multi_layer_neural_network_fn(Ks, relu=True, norm="LayerNorm"):
         if relu:
             linears += [
             nn.Linear(Ks[i-1], Ks[i]),
+            nn.LayerNorm(Ks[i]) if norm=="LayerNorm" else nn.BatchNorm1d(Ks[i]),
             nn.ReLU(),
-            nn.LayerNorm(Ks[i]) if norm=="LayerNorm" else nn.BatchNorm1d(Ks[i])
             ]
         else:
             linears += [

@@ -9,8 +9,10 @@ EPSILON = np.finfo(np.float32).tiny
 
 def gumbel_keys(w):
     uniform = w.new(w.shape).uniform_(EPSILON, 1)
+#    return uniform + torch.sigmoid(w)
     z = -torch.log(-torch.log(uniform))
     return torch.log(w+1e-8) + z
+  
 
 def continuous_topk(w, k, t=0.1, separate=True, hard=True):
     khot_list = []
@@ -45,12 +47,12 @@ def continuous_topk(w, k, t=0.1, separate=True, hard=True):
 class DownSampleBlock(nn.Module):
     def __init__(self, in_channels, out_channels, in_num_points=2048, out_num_points=1024):
         super(DownSampleBlock, self).__init__()
-        from utils import MLPs
-        self.mlps = MLPs([int(in_channels), int(out_channels), int(out_channels)])
-        self.downsample_mlp = MLPs([int(out_channels), int(out_channels)//2, 1])
+        #from utils import MLPs
+        #self.mlps = MLPs([int(in_channels), int(out_channels), int(out_channels)])
+        #self.downsample_mlp = MLPs([int(out_channels), int(out_channels)//2, 1])
         
-        #self.mlps = multi_layer_neural_network_fn([int(in_channels), int(out_channels), int(out_channels)], norm="LayerNorm")
-        #self.downsample_mlp = multi_layer_neural_network_fn([int(out_channels), int(out_channels)//2, 1], relu=True, norm="LayerNorm")
+        self.mlps = multi_layer_neural_network_fn([int(in_channels), int(out_channels), int(out_channels)], norm="LayerNorm")
+        self.downsample_mlp = multi_layer_neural_network_fn([int(out_channels), int(out_channels)//2, 1], relu=True, norm="LayerNorm")
         self.out_num_points = int(out_num_points)
         
     def regulizer(self, w):

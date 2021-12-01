@@ -96,8 +96,12 @@ class GAN_Module(nn.Module):
 #        self.edge_feature_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.key_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
         self.value_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
-        self.query_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        #self.query_fn = multi_layer_neural_network_fn(edge_MLP_depth_list)
+        self.query_fn = multi_layer_neural_network_fn([edge_MLP_depth_list[0]-3, *edge_MLP_depth_list[1:]])
         self.update_fn = multi_layer_neural_network_fn(update_MLP_depth_list)
+
+        self.downsample_edges = 8
+        self.downsample_layer = multi_layer_neural_network_fn([edge_MLP_depth_list[0], self.downsample_edges])
 
         assert edge_MLP_depth_list[-1] % heads == 0
         self.heads = heads
@@ -107,40 +111,89 @@ class GAN_Module(nn.Module):
         xys: b x n x 3
         features: b x C x n
         """
-        # 
+
+        """
+
+        print("edges", edges)
+        print("edges.shape", edges.shape)
+        for i in range(edges.shape[0]):
+            for j in range(edges.shape[1]):
+                assert edges[i][j][1]  == j//16
+                print(edges[i][j][1], j//16)
+        """
+
         input_vertex_features = features.permute(0,2,1) # b x n x C
         input_vertex_coordinates = xyz # b x n x 3
+
+        b, n, C = input_vertex_features.shape
+        e = edges.shape[1]
 
 
         # Gather the source vertex of the edges
         s_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, :1].expand(-1, -1, input_vertex_features.shape[-1])) # b x e x C
         s_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, :1].expand(-1, -1, 3)) # b x e x 3
 
+#        print("b, n, e, e//n, ", b, n, e,  e//n)
+        s_vertex_features = s_vertex_features.view(b, n, e//n, -1)
+        s_vertex_coordinates = s_vertex_coordinates.view(b, n, e//n, -1)
+        # Prepare initial edge features
+        #s_vertex_features = torch.cat([s_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
+        s_vertex_features = torch.cat([s_vertex_features, 
+            s_vertex_coordinates - input_vertex_coordinates[:, :, None, :]
+            ], dim=-1) # b, n, e//n, C
+        #d_vertex_features = torch.cat([d_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
+        b, n, e_n, C = s_vertex_features.shape
+
+        s_vertex_features = s_vertex_features.view(b*n, e//n, -1)
+        s_vertex_coordinates = s_vertex_coordinates.view(b*n, e//n, -1)
+
+        # downsample edges from e//n to e'
+        downsample_w = self.downsample_layer(s_vertex_features) # (bxn) x (e//n) x e', e'=8
+        downsample_w = downsample_w.permute(0,2,1) # (bxn) x e' x (e//n)
+        # gumbel softmax
+        downsample_w = nn.functional.gumbel_softmax(downsample_w, tau=0.1)
+        s_vertex_features = torch.bmm(downsample_w, s_vertex_features) # (bxn) x e' x C
+        s_vertex_coordinates = torch.bmm(downsample_w, s_vertex_coordinates) # (bxn) x e' x C
+        s_vertex_features = s_vertex_features.view(b, n, -1, C)
+        s_vertex_coordinates = s_vertex_coordinates.view(b,n,-1, 3)
+
+        b, n, e_n, C = s_vertex_features.shape
+        """
         # Gather the destination vertex of the edges
         d_vertex_features = torch.gather(input_vertex_features, dim=1, index=edges[:, :, 1:].expand(-1, -1, input_vertex_features.shape[-1])) # b x e x C
         d_vertex_coordinates = torch.gather(input_vertex_coordinates, dim=1, index=edges[:, :, 1:].expand(-1, -1, 3)) # b x e x 3
+        """
 
-        # Prepare initial edge features
-        s_vertex_features = torch.cat([s_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
-        d_vertex_features = torch.cat([d_vertex_features, s_vertex_coordinates - d_vertex_coordinates], dim=-1)
 
-        b, e, C = s_vertex_features.shape
         s_vertex_features = s_vertex_features.view(-1, C)
-        d_vertex_features = d_vertex_features.view(-1, C)
+        #d_vertex_features = input_vertex_features.view(-1, C-3) # b x n x C ---> (bxn) xC
+        d_vertex_features = input_vertex_features.reshape(-1, C-3) # b x n x C ---> (bxn) xC
 
         key = self.key_fn(s_vertex_features) # (b x e) x C
-        key = key.view(b,e, self.heads, -1) # b x e x heads x C
+        key = key.view(b, n, e_n, self.heads, -1) # b x e x heads x C
 
         value = self.value_fn(s_vertex_features) # (b x e) x C
-        value = value.view(b,e,self.heads, -1) # b x e x heads x C
+        value = value.view(b, n, e_n, self.heads, -1) # b x e x heads x C
 
         query = self.query_fn(d_vertex_features) # (bxe) x C
-        query = query.view(b,e,self.heads, -1) # b x e x heads x C
-
-
+        query = query.view(b, n, 1, self.heads, -1) # b x e x heads x C
 
         # calculate similarity
-        simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e x heads
+        #simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x e x heads
+        simi = (key * query).sum(-1) / math.sqrt(key.shape[-1]) # b x n x e_n x self.heads x 1
+        simi_softmax = nn.functional.softmax(simi, dim=2) # b x n x e_n x self.heads 
+
+        value = value * simi_softmax[:, :, :, :, None] # b x n x e_n x self.heads x C
+
+        value = value.sum(2) # b x n x self.heads x C
+        value = value.view(b,n,-1)
+        value = self.update_fn(value.view(-1, C-3)).view(b, n, -1)
+        output_vertex_features = value + input_vertex_features
+
+
+
+
+        """
         max_ = scatter(simi, edges[:, :, 1], dim=1, reduce="max") # b x N x heads
 
         max_ = torch.gather(max_, dim=1, index=edges[:,:, 1:].expand(-1,-1,self.heads)) # b x e x heads
@@ -154,23 +207,17 @@ class GAN_Module(nn.Module):
 
 #        base = scatter(simi, edges[:, :, 1], dim=1, reduce="sum") # b x n x heads
 #        print("base", base, base.shape) # base[i, j, k]==1 for all (i,j,k)
-
-
-
         # Aggregate edge features
         value = value * simi[:, :, :, None] # b x e x heads x C
         value = value.view(b, e, -1)
-
-
         aggregated_features = scatter(value, edges[:, :, 1], dim=1, reduce="mean") # b x n x C
-
         # Update vertex features
         b, n, C = aggregated_features.shape
         aggregated_features=aggregated_features.view(-1, C)
         update_features = self.update_fn(aggregated_features) # (bxn) x C
         update_features = update_features.view(b,n,-1) # bxnxC
-
         output_vertex_features  = update_features + input_vertex_features
+        """
 
         return output_vertex_features.permute(0, 2, 1).contiguous()
 
@@ -310,7 +357,7 @@ class PointNet2SASSG(BasePointNet):
                 sa_xyz[i], sa_features[i])
 
             if i>0: 
-                edges = build_edge(cur_xyz, k=16)
+                edges = build_edge(cur_xyz, k=64)
                 edges = edges.permute(0, 2,1) # b x e x 2
 
                 cur_features = self.GCN_Blocks[i-1](cur_xyz, cur_features, edges)
