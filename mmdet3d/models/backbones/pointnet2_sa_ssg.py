@@ -107,12 +107,14 @@ class PointNet2SASSG(BasePointNet):
                     mlp_channels=cur_sa_mlps,
                     norm_cfg=norm_cfg,
                     cfg=sa_cfg,
+
                     downsample_block=DownSampleBlock(
                         sa_channels[sa_index-1][-1], 
                         sa_channels[sa_index][-1],
                         num_points[sa_index-1],
                         num_points[sa_index]
-                        ) if sa_index!=0 else None
+                        #) if sa_index!=0 else None
+                        ) if sa_index==-1 else None
                     ))
             skip_channel_list.append(sa_out_channel)
             sa_in_channel = sa_out_channel
@@ -166,7 +168,7 @@ class PointNet2SASSG(BasePointNet):
                 sa_xyz[i], sa_features[i])
 
             if i>0: 
-                edges = build_edge(cur_xyz, k=32)
+                edges = build_edge(cur_xyz, k=16)
                 edges = edges.permute(0, 2,1) # b x e x 2
 
                 cur_features = self.GCN_Blocks[i-1](cur_xyz, cur_features, edges)

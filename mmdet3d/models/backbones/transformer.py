@@ -77,17 +77,19 @@ class MultiHeadAttention(nn.Module):
         self.att_size = att_size = hidden_size // head_size
         self.scale = att_size ** -0.5
 
-        self.linear_q = nn.Linear(hidden_size, head_size * att_size, bias=False)
-        self.linear_k = nn.Linear(hidden_size+3, head_size * att_size, bias=False)
-        self.linear_v = nn.Linear(hidden_size+3, head_size * att_size, bias=False)
+        self.linear_q = nn.Linear(hidden_size, head_size * att_size, bias=True)
+        self.linear_k = nn.Linear(hidden_size+3, head_size * att_size, bias=True)
+        self.linear_v = nn.Linear(hidden_size+3, head_size * att_size, bias=True)
         initialize_weight(self.linear_q)
         initialize_weight(self.linear_k)
         initialize_weight(self.linear_v)
 
+        self.relu = nn.ReLU()
+
         self.att_dropout = nn.Dropout(dropout_rate)
 
         self.output_layer = nn.Linear(head_size * att_size, hidden_size,
-                                      bias=False)
+                                      bias=True)
         initialize_weight(self.output_layer)
         self.heads = head_size
         
@@ -104,6 +106,10 @@ class MultiHeadAttention(nn.Module):
         k = self.linear_k(k) # (b x e) x C
         v = self.linear_v(v) # (b x e) x C
         q = self.linear_q(q)
+
+        k = self.relu(k)
+        v = self.relu(v)
+        q = self.relu(q)
 
         k = k.view(b, n, e_n, self.heads, -1) 
         v = v.view(b, n, e_n, self.heads, -1) 
@@ -126,6 +132,9 @@ class MultiHeadAttention(nn.Module):
 class GAN_Module(nn.Module):
     def __init__(self, hidden_size=256, filter_size=512, dropout_rate=0.1, heads=8):
         super(GAN_Module, self).__init__()
+
+        """
+        """
         self.self_attention_norm = nn.LayerNorm(hidden_size, eps=1e-6)
         self.self_attention = MultiHeadAttention(hidden_size, dropout_rate)
         self.self_attention_dropout = nn.Dropout(dropout_rate)
@@ -135,12 +144,14 @@ class GAN_Module(nn.Module):
         self.ffn_dropout = nn.Dropout(dropout_rate)
 
         self.downsample_edges = 8
+        """
         self.downsample_layer = nn.Sequential(*[
             nn.Linear(hidden_size, hidden_size//2),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             nn.Linear(hidden_size//2, self.downsample_edges)
             ])
+        """
 
         self.heads = heads
 
@@ -149,15 +160,15 @@ class GAN_Module(nn.Module):
         xys: b x n x 3
         features: b x C x n
         """
-
         """
-        print("edges", edges)
-        print("edges.shape", edges.shape)
+
         for i in range(edges.shape[0]):
             for j in range(edges.shape[1]):
                 assert edges[i][j][1]  == j//16
-                print(edges[i][j][1], j//16)
+                #print(edges[i][j][1], j//16)
+        return features
         """
+
 
         features = features.permute(0,2,1) # b x n x C
         input_vertex_features = self.self_attention_norm(features)
@@ -171,8 +182,8 @@ class GAN_Module(nn.Module):
         s_vertex_features = s_vertex_features.view(b, n, e//n, -1)
         s_vertex_coordinates = s_vertex_coordinates.view(b, n, e//n, -1)
 
+        """
         b, n, e_n, C = s_vertex_features.shape
-
         # downsample edges from e//n to e'
         # gumbel softmax
         downsample_w = self.downsample_layer(s_vertex_features.view(b*n, e//n, -1)) # (bxn) x (e//n) x e', e'=8
@@ -181,6 +192,9 @@ class GAN_Module(nn.Module):
 
         s_vertex_features = torch.bmm(downsample_w, s_vertex_features.view(b*n, e//n, -1)).view(b, n, -1, C) # b x n x e' x C
         s_vertex_coordinates = torch.bmm(downsample_w, s_vertex_coordinates.view(b*n, e//n, -1)).view(b, n, -1, 3) # b x n x e' x 3
+        """
+
+
         s_vertex_features = torch.cat([s_vertex_features, 
             s_vertex_coordinates - input_vertex_coordinates[:, :, None, :]
             ], dim=-1) # b, n, e//n, C
